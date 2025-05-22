@@ -1200,7 +1200,7 @@ class BaseLlmArgs(BaseModel):
                     from tensorrt_llm._torch.speculative import Eagle3Config
                     self.speculative_config = Eagle3Config(
                         max_draft_tokens=self.speculative_config.max_draft_len,
-                        eagle_weights_path=self.speculative_config.
+                        draft_model_path=self.speculative_config.
                         pytorch_eagle_weights_path,
                         eagle3_one_model=self.speculative_config.
                         eagle3_one_model)

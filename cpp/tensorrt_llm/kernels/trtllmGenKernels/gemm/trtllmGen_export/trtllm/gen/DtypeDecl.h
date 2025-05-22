@@ -182,7 +182,6 @@ inline int dtypeNumEltsPerSf(Dtype dtype)
 {
     switch (dtype)
     {
-    case Dtype::E0m3:
     case Dtype::E2m1: return 16;
     case Dtype::MxE2m1:
     case Dtype::MxE4m3: return 32;
@@ -197,7 +196,6 @@ inline Dtype dtypeGetBlockSfType(Dtype dtype)
 {
     switch (dtype)
     {
-    case Dtype::E0m3:
     case Dtype::E2m1: return Dtype::E4m3;
     case Dtype::MxE2m1:
     case Dtype::MxE4m3: return Dtype::UE8m0;
