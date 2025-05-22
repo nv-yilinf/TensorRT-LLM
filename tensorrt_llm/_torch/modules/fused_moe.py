@@ -409,6 +409,7 @@ class FusedMoE(nn.Module):
 
         if self.is_trtllm():
             # trtllm_gen backend only support min-latency mode now
+            assert not self.apply_router_weight_on_input, "TRTLLM backend does not support applying router weight on input yet."
             assert not self.reduce_results
             assert self.quant_config and (
                 self.quant_config.quant_mode.has_nvfp4()
