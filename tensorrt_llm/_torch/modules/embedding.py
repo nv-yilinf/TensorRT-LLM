@@ -191,6 +191,9 @@ class Embedding(LMHead):
             self.vocab_start_index = self.tp_rank * slice_width
             self.vocab_end_index = min((self.tp_rank + 1) * slice_width,
                                        num_embeddings)
+        else:
+            self.vocab_start_index = 0
+            self.vocab_end_index = num_embeddings
 
     def forward(self, input):
         # Run the ops before all_reduce/all_gather.
