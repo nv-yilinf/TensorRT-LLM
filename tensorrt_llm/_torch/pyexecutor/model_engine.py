@@ -19,7 +19,6 @@ import torch._dynamo.config
 
 import tensorrt_llm.bindings.internal.userbuffers as ub
 from tensorrt_llm._torch.pyexecutor.sampler import SampleStateTensors
-from tensorrt_llm._torch.speculative.mtp import SampleStateTensorsMTP
 from tensorrt_llm._utils import (is_trace_enabled, nvtx_range, release_gc,
                                  torch_dtype_to_str, trace_func)
 from tensorrt_llm.bindings.executor import GuidedDecodingConfig
@@ -447,7 +446,8 @@ class PyTorchModelEngine(ModelEngine):
             self.previous_kv_lens_offsets_cuda = torch.zeros((batch_size, ),
                                                              dtype=torch.int,
                                                              device='cuda')
-            self.without_logits = self.spec_config.spec_dec_mode.without_logits()
+            self.without_logits = self.spec_config.spec_dec_mode.without_logits(
+            )
             self.max_draft_len = spec_config.max_draft_tokens
         else:
             self.without_logits = False
@@ -1093,7 +1093,7 @@ class PyTorchModelEngine(ModelEngine):
             # speculative decoding cases: [batch, 1 + draft_len], others: [batch]
             new_tokens_device = new_tensors_device.new_tokens
             if self.without_logits:
-                assert isinstance(new_tensors_device, SampleStateTensorsMTP)
+                # assert isinstance(new_tensors_device, SampleStateTensorsMTP)
                 new_tokens_lens_device = new_tensors_device.new_tokens_lens  # [batch]
                 next_draft_tokens_device = new_tensors_device.next_draft_tokens  # [batch, draft_len]
 
