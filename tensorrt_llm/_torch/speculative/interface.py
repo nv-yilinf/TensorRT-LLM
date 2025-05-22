@@ -57,7 +57,7 @@ class SpeculativeDecodingMode(IntEnum):
         return self.is_eagle3_one_model()
 
     def has_spec_decoder(self):
-        return self.is_mtp() or self.is_eagle3()
+        return self.is_mtp() or self.is_eagle3() or self.is_eagle3_one_model()
 
     def extend_ctx(self, attention_backend: AttentionBackend):
         """

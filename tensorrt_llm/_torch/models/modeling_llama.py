@@ -1452,8 +1452,7 @@ class LlamaForCausalLM(DecoderModelForCausalLM[LlamaModel, LlamaConfig]):
                                     logits=logits,
                                     attn_metadata=attn_metadata,
                                     spec_metadata=spec_metadata,
-                                    draft_model=self.draft_model,
-                                    main_model_lm_head=self.lm_head)
+                                    draft_model=self.draft_model)
         else:
             logits = self.logits_processor.forward(
                 hidden_states,
