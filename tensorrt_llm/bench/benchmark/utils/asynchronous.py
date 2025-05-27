@@ -68,6 +68,7 @@ class LlmManager:
 
         # Mark that the response returned. Construct a record to send to statistics.
         tokens = list(chain(*[beam.token_ids for beam in response.outputs]))
+        print(f"tokens: {tokens}")
         request_perf_item = PerfItemTuple(
             start_timestamp=request_start_timestamp,
             end_timestamp=response_end_timestamp,
