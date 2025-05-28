@@ -28,7 +28,7 @@ from ..modules.gated_mlp import GatedMLP
 from ..modules.linear import (Linear, TensorParallelMode, WeightMode, WeightsLoadingConfig)
 from ..modules.logits_processor import LogitsProcessor
 from ..modules.rms_norm import RMSNorm
-from ..speculative import SpecMetadata
+from ..speculative import SpecMetadata, get_spec_worker
 
 
 @contextlib.contextmanager
@@ -836,7 +836,7 @@ class Eagle3DraftModel(DecoderModel, Generic[TAttention, TConfig]):
                             eps=config.rms_norm_eps,
                             dtype=config.torch_dtype)
 
-        if config.vocab_size != config.draft_vocab_size:
+        if config.draft_vocab_size is not None and config.vocab_size != config.draft_vocab_size:
             self.d2t = nn.Parameter(torch.empty((config.draft_vocab_size, ),
                                                 dtype=torch.int64),
                                     requires_grad=False)
@@ -896,11 +896,14 @@ class Eagle3ForCausalLM(DecoderModelForCausalLM[TModel, TConfig], Generic[TModel
         eagle3_draft_model: TModel,
         model_config: TConfig,
     ):
+        draft_vocab_size = model_config.pretrained_config.vocab_size
+        if model_config.pretrained_config.draft_vocab_size is not None:
+            draft_vocab_size = model_config.pretrained_config.draft_vocab_size
         super().__init__(
             eagle3_draft_model,
             config=model_config,
             hidden_size=model_config.pretrained_config.hidden_size,
-            vocab_size=model_config.pretrained_config.draft_vocab_size)
+            vocab_size=draft_vocab_size)
 
     def forward(
         self,
@@ -929,18 +932,29 @@ class Eagle3ForCausalLM(DecoderModelForCausalLM[TModel, TConfig], Generic[TModel
             return_context_logits,
         )
 
-    def load_weights(self, weights: Dict):
+    def load_weights(self, weights: Dict) -> bool:
         new_weights = {}
+        lm_head_in_weights = False
         for k, v in weights.items():
-            new_k = "model." + k if 'lm_head' not in k else k
+            if 'lm_head' not in k:
+                new_k = "model." + k
+            else:
+                lm_head_in_weights = True
+                new_k = k
             new_weights[new_k] = v
-
-        super().load_weights(new_weights)
+        if lm_head_in_weights:
+            super().load_weights(new_weights)
+        else:
+            super().load_weights(new_weights, skip_modules=['lm_head'])
+        return lm_head_in_weights
 
     def load_weights_from_target_model(self,
-                                       target_model: torch.nn.Module) -> None:
+                                       target_model: torch.nn.Module,
+                                       load_lm_head: bool = False) -> None:
         if self.model.embed_tokens is None:
             self.model.embed_tokens = target_model.model.embed_tokens
+        if load_lm_head:
+            self.lm_head = target_model.lm_head
 
     # TODO: should input/position IDs be included in this? Keeping it implicit
     # for now since the shapes/dtypes are the same across all models we have.
@@ -970,3 +984,82 @@ class Eagle3ForCausalLM(DecoderModelForCausalLM[TModel, TConfig], Generic[TModel
             hidden_states = self.model.fc(hidden_states)
 
         return hidden_states
+
+TEagle3DraftCausalLM = TypeVar("TEagle3DraftCausalLM", bound=Eagle3ForCausalLM)
+
+class Eagle3OneEnginelForCausalLM(DecoderModelForCausalLM[TModel, TConfig], Generic[TModel, TEagle3DraftCausalLM, TConfig]):
+    def __init__(self, model: TModel, eagle3_draft_causal_lm: Type[TEagle3DraftCausalLM] , model_config: ModelConfig[TConfig]):
+        super().__init__(model, config=model_config, hidden_size=model_config.pretrained_config.hidden_size, vocab_size=model_config.pretrained_config.vocab_size)
+        self.draft_model = None
+        if hasattr(
+                model_config, "spec_config"
+        ) and model_config.spec_config is not None and model_config.spec_config.spec_dec_mode.is_eagle3_one_model(
+        ):
+            draft_config = ModelConfig.from_pretrained(
+                model_config.spec_config.draft_model_path,
+                trust_remote_code=True,
+                attn_backend=model_config.attn_backend,
+                moe_backend=model_config.moe_backend,
+                mapping=model_config.mapping)
+            draft_config.spec_config = model_config.spec_config
+            draft_config.max_num_tokens = model_config.max_num_tokens
+            draft_config.moe_max_num_tokens = model_config.moe_max_num_tokens
+            draft_config.quant_config.kv_cache_quant_algo = \
+                model_config.quant_config.kv_cache_quant_algo
+            self.draft_model = eagle3_draft_causal_lm(
+                draft_config, model_config.pretrained_config.num_hidden_layers)
+            self.spec_worker = get_spec_worker(model_config.spec_config,
+                                               model_config.mapping)
+
+    def forward(
+        self,
+        attn_metadata: AttentionMetadata,
+        input_ids: torch.LongTensor = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        return_context_logits: bool = False,
+        spec_metadata: Optional[SpecMetadata] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        hidden_states = self.model(
+            input_ids=input_ids,
+            attn_metadata=attn_metadata,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            spec_metadata=spec_metadata,
+            **kwargs,
+        )
+
+        if self.draft_model is not None:
+            # get logits
+            logits = self.logits_processor.forward(
+                hidden_states[spec_metadata.gather_ids],
+                self.lm_head,
+                attn_metadata,
+                True,
+            )
+            # get accepted tokens and next draft tokens
+            return self.spec_worker(input_ids=input_ids,
+                                    position_ids=position_ids,
+                                    hidden_states=hidden_states,
+                                    logits=logits,
+                                    attn_metadata=attn_metadata,
+                                    spec_metadata=spec_metadata,
+                                    draft_model=self.draft_model)
+        else:
+            logits = self.logits_processor.forward(
+                hidden_states,
+                self.lm_head,
+                attn_metadata,
+                return_context_logits,
+            )
+
+        return logits
+
+    def load_weights(self, weights: Dict):
+        super().load_weights(weights, skip_modules=["draft_model"])
+
+    def load_draft_weights(self, weights: Dict):
+        load_lm_head_from_target = not self.draft_model.load_weights(weights)
+        self.draft_model.load_weights_from_target_model(self, load_lm_head_from_target)
+
