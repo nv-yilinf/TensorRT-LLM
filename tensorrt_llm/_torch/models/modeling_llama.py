@@ -1,5 +1,5 @@
 import copy
-from typing import Any, Dict, List, Optional, Tuple, Union, Type
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from PIL.Image import Image
@@ -29,15 +29,15 @@ from ..modules.embedding import Embedding
 from ..modules.fused_moe import (FusedMoE, Llama4RenormalizeMoeRoutingMethod,
                                  MoEWeightLoadingMode)
 from ..modules.gated_mlp import GatedMLP
-from ..modules.linear import (Linear, TensorParallelMode, WeightMode,
-                              WeightsLoadingConfig)
+from ..modules.linear import Linear, TensorParallelMode
 from ..modules.multi_stream_utils import maybe_execute_in_parallel
 from ..modules.rms_norm import RMSNorm
 from ..speculative import SpecMetadata
 from ..utils import Fp4QuantizedTensor
 from .modeling_multimodal_utils import fuse_input_embeds
-from .modeling_utils import (DecoderModel, DecoderModelForCausalLM, EagerFusionConfig, Eagle3DraftModel, 
-                             Eagle3ForCausalLM, Eagle3OneEnginelForCausalLM, register_auto_model)
+from .modeling_utils import (DecoderModel, DecoderModelForCausalLM, 
+                             EagerFusionConfig, register_auto_model)
+from .modeling_speculative import Eagle3DraftModel, Eagle3ForCausalLM, Eagle3OneEnginelForCausalLM
 
 
 class Llama4Attention(Attention):
