@@ -4,12 +4,14 @@
 import asyncio
 import json
 import os
+import socket
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from copy import copy
 from typing import Literal, Optional, OrderedDict, Union
 
+import ntplib
 # yapf: disable
 from openai.types.responses import (ResponseCompletedEvent,
                                     ResponseContentPartAddedEvent,
@@ -72,6 +74,72 @@ def get_encoding():
         _harmony_encoding = load_harmony_encoding(
             HarmonyEncodingName.HARMONY_GPT_OSS)
     return _harmony_encoding
+
+
+def get_monotonic_clock_offset() -> Optional[float]:
+    """
+    Calculates the average offset between the local monotonic clock and NTP UTC time.
+
+    This function queries an NTP server 10 times to find the difference
+    between the server's UTC time and the local monotonic clock's value.
+    The monotonic clock is a steadily increasing clock that is not affected
+    by system time changes.
+
+    The calculated offset can be added to a future `time.monotonic()` reading
+    to get an estimate of the current UTC time.
+
+    Returns:
+        float: The average offset in seconds.
+        None: If the NTP server cannot be reached (e.g., no internet connection).
+    """
+    ntp_client = ntplib.NTPClient()
+    # A reliable public NTP server pool
+    ntp_server = 'pool.ntp.org'
+
+    REPEAT_COUNT = 10
+    offsets = []
+    retry_count = REPEAT_COUNT
+
+    # Repeat the measurement 10 times for better accuracy
+    while len(offsets) < REPEAT_COUNT:
+        try:
+            # Record monotonic time just before the network request
+            mono_before = time.monotonic()
+
+            # Request time from the NTP server
+            response = ntp_client.request(ntp_server, version=3)
+
+            # Record monotonic time just after the network request
+            mono_after = time.monotonic()
+
+            # The NTP timestamp (tx_time) is the UTC time when the server sent the reply.
+            # ntplib converts this to a standard Unix timestamp (seconds since 1970).
+            ntp_utc_time = response.tx_time
+
+            # Estimate the local monotonic time corresponding to the NTP timestamp
+            # by taking the midpoint of the request/response interval.
+            local_monotonic_time = (mono_before + mono_after) / 2.0
+
+            # Calculate the offset: UTC Time = Monotonic Time + Offset
+            offset = ntp_utc_time - local_monotonic_time
+            offsets.append(offset)
+
+            time.sleep(0.2)
+
+        except (socket.gaierror, ntplib.NTPException) as e:
+            logger.error(e)
+            if retry_count > 0:
+                retry_count = retry_count - 1
+                continue
+            logger.error(
+                f"NTP server connection exceeds max retry times: {REPEAT_COUNT}"
+            )
+
+    if offsets:
+        # Return the average of all collected offsets
+        return sum(offsets) / len(offsets)
+    else:
+        return None
 
 
 def decode_tokens(tokens):

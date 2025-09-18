@@ -31,6 +31,7 @@ from tensorrt_llm.serve.openai_protocol import (ChatCompletionRequest,
                                                 CompletionResponse,
                                                 DisaggregatedParams,
                                                 ErrorResponse)
+from tensorrt_llm.serve.responses_utils import get_monotonic_clock_offset
 from tensorrt_llm.serve.router import KvCacheAwareRouter, create_router
 from tensorrt_llm.version import __version__ as VERSION
 
@@ -60,8 +61,12 @@ class OpenAIDisaggServer:
             # (ctx_server, gen_server, ctx_request_id, server_start_ts, server_first_token_ts)
             self.perf_metrics_keys = deque(maxlen=self.perf_metrics_max_requests)
             self.perf_metrics_keys_lock = asyncio.Lock()
-            # server_key -> {ctx_request_id: perf_metrics}
+            # server_url -> {ctx_request_id: perf_metrics}
             self.server_perf_metrics: dict[str, dict[int, dict]] = {}
+
+            self.perf_ts_offset = get_monotonic_clock_offset()
+            # server_url -> the perf metric timestamp offset between the disagg server and worker server
+            self.server_perf_ts_offsets: dict[str, float] = {}
         else:
             self.perf_metrics_keys = None
             self.perf_metrics_keys_lock = None
@@ -105,6 +110,8 @@ class OpenAIDisaggServer:
 
             logger.info("Waiting for context and generation servers to be ready")
             await self.wait_for_servers_ready(server_start_timeout_secs)
+
+            await self.query_perf_ts_offsets(self.session)
 
             if self.metadata_server:
                 logger.info("Starting server monitoring via metadata service")
@@ -249,7 +256,11 @@ class OpenAIDisaggServer:
                     "gen_perf_metrics": gen_perf_metrics})
             self.perf_metrics_keys = deque(remain_keys, maxlen=self.perf_metrics_max_requests)
 
-        return JSONResponse(content=return_metrics)
+        response = {
+            "server_perf_timestamp_offsets": self.server_perf_ts_offsets,
+            "perf_metrics": return_metrics
+        }
+        return JSONResponse(content=response)
 
 
     async def openai_completion(self, req: CompletionRequest, raw_request: Request) -> Response:
@@ -501,6 +512,26 @@ class OpenAIDisaggServer:
 
     async def send_chat_request(self, url: str, request: ChatCompletionRequest) -> ChatCompletionResponse:
         return await self.send_request(url, request, "/v1/chat/completions", ChatCompletionResponse, self.create_chat_generator)
+
+    async def query_perf_ts_offsets(self, session: aiohttp.ClientSession):
+        async def query_perf_ts_offset(server_url: str) -> Optional[float]:
+            try:
+                async with session.get(server_url + '/perf_ts_offset') as response:
+                    if response.status == 200:
+                        return await response.json()
+                    else:
+                        return None
+            except Exception:
+                return None
+        for server_url in self.ctx_servers + self.gen_servers:
+            if self.perf_ts_offset:
+                response = await query_perf_ts_offset(server_url)
+                if response:
+                    worker_perf_ts_offset = response
+                    self.server_perf_ts_offsets[server_url] = self.perf_ts_offset - worker_perf_ts_offset
+                    continue
+            self.server_perf_ts_offsets[server_url] = None
+        logger.info(f"Server perf metrics timestamp offsets: {self.server_perf_ts_offsets}")
 
     @classmethod
     async def check_server_ready(cls, session: aiohttp.ClientSession, server_url: str) -> bool:
