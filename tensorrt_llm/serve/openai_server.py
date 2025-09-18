@@ -53,7 +53,6 @@ from tensorrt_llm.serve.postprocess_handlers import (
 from tensorrt_llm.serve.responses_utils import ConversationHistoryStore
 from tensorrt_llm.serve.responses_utils import \
     create_response as responses_api_create_response
-from tensorrt_llm.serve.responses_utils import get_monotonic_clock_offset
 from tensorrt_llm.serve.responses_utils import \
     process_streaming_events as responses_api_process_streaming_events
 from tensorrt_llm.serve.responses_utils import \
@@ -107,7 +106,6 @@ class OpenAIServer:
         self.metrics_collector = None
         self.perf_metrics = None
         self.perf_metrics_lock = None
-        self.perf_ts_offset = None
         if self.llm.args.return_perf_metrics:
             set_prometheus_multiproc_dir()
             self.metrics_collector = MetricsCollector({
@@ -118,7 +116,6 @@ class OpenAIServer:
             if max_perf_metrics > 0:
                 self.perf_metrics = deque(maxlen=max_perf_metrics)
                 self.perf_metrics_lock = asyncio.Lock()
-            self.perf_ts_offset = get_monotonic_clock_offset()
 
         # gpt-oss
         self.harmony_adapter: HarmonyAdapter | None = None
@@ -319,7 +316,10 @@ class OpenAIServer:
         return JSONResponse(content=stats)
 
     async def get_perf_ts_offset(self) -> JSONResponse:
-        return JSONResponse(content=self.perf_ts_offset)
+        receive_ts = time.monotonic()
+        await asyncio.sleep(0.2)
+        transmit_ts = time.monotonic()
+        return JSONResponse(content={"receive_ts": receive_ts, "transmit_ts": transmit_ts})
 
     async def get_perf_metrics(self) -> JSONResponse:
         if self.perf_metrics is None:

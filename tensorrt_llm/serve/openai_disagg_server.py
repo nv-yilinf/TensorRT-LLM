@@ -31,7 +31,6 @@ from tensorrt_llm.serve.openai_protocol import (ChatCompletionRequest,
                                                 CompletionResponse,
                                                 DisaggregatedParams,
                                                 ErrorResponse)
-from tensorrt_llm.serve.responses_utils import get_monotonic_clock_offset
 from tensorrt_llm.serve.router import KvCacheAwareRouter, create_router
 from tensorrt_llm.version import __version__ as VERSION
 
@@ -64,7 +63,6 @@ class OpenAIDisaggServer:
             # server_url -> {ctx_request_id: perf_metrics}
             self.server_perf_metrics: dict[str, dict[int, dict]] = {}
 
-            self.perf_ts_offset = get_monotonic_clock_offset()
             # server_url -> the perf metric timestamp offset between the disagg server and worker server
             self.server_perf_ts_offsets: dict[str, float] = {}
         else:
@@ -111,7 +109,8 @@ class OpenAIDisaggServer:
             logger.info("Waiting for context and generation servers to be ready")
             await self.wait_for_servers_ready(server_start_timeout_secs)
 
-            await self.query_perf_ts_offsets(self.session)
+            if self.perf_metrics_max_requests > 0:
+                await self.query_perf_ts_offsets(self.session)
 
             if self.metadata_server:
                 logger.info("Starting server monitoring via metadata service")
@@ -516,21 +515,24 @@ class OpenAIDisaggServer:
     async def query_perf_ts_offsets(self, session: aiohttp.ClientSession):
         async def query_perf_ts_offset(server_url: str) -> Optional[float]:
             try:
+                originate_ts = time.monotonic()
                 async with session.get(server_url + '/perf_ts_offset') as response:
+                    destination_ts = time.monotonic()
                     if response.status == 200:
-                        return await response.json()
+                        response = await response.json()
+                        receive_ts = response['receive_ts']
+                        transmit_ts = response['transmit_ts']
+                        delay = (destination_ts - originate_ts) - (transmit_ts - receive_ts)
+                        offset = - ((receive_ts - originate_ts) + (transmit_ts - destination_ts)) / 2
+                        return delay, offset
                     else:
-                        return None
+                        return None, None
             except Exception:
                 return None
         for server_url in self.ctx_servers + self.gen_servers:
-            if self.perf_ts_offset:
-                response = await query_perf_ts_offset(server_url)
-                if response:
-                    worker_perf_ts_offset = response
-                    self.server_perf_ts_offsets[server_url] = self.perf_ts_offset - worker_perf_ts_offset
-                    continue
-            self.server_perf_ts_offsets[server_url] = None
+            delay, offset = await query_perf_ts_offset(server_url)
+            self.server_perf_ts_offsets[server_url] = offset
+            logger.info(f'Server: {server_url}, delay: {delay} second, offset: {offset} second')
         logger.info(f"Server perf metrics timestamp offsets: {self.server_perf_ts_offsets}")
 
     @classmethod
